@@ -1,7 +1,7 @@
 # RenewableEnergy_InnovateCO
 This was the project for the Business Analytics Challenge called InnovateCO held by Colorado BIC.
 We were chosen as finalists, participated in the final pitch, and had the honor of second place in the contest. 
-Our solution to this question was solar energy, so we calculated the number of solar panels needed per person in Colorado to cover the growing electricity demands using predictive machine learning models.
+We calculated the number of solar panels needed per person in Colorado to cover the growing electricity demands using predictive machine learning models.
 
 ### Project Description
 The topic for the Data Analysis was, “How Can Colorado address the challenge of balancing energy demands for its growing population and economy with the need for conservation and sustainability?”. 
