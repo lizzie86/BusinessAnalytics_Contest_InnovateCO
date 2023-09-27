@@ -1,0 +1,474 @@
+---
+title: "Colorado Solar Energy"
+author: "jpd_18"
+date: "2023-05-03"
+output: 
+  pdf_document:
+    includes:
+      in_header: "wrap-code.tex"
+---
+
+```{r setup, include=FALSE}
+library(readr)
+library(zoo)
+library(tidyverse)
+library(forecast)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(magrittr)
+library(caret)
+library(readxl)
+options(scipen = 9999)
+
+generation <- read.csv("electricity_generation.csv")
+solResource <- read.csv("Solar_Photovoltaic_Resource_in_Colorado.csv")
+# read in data for end-user consumption
+# values are in billion Btu
+tot_con_end_user <- read_excel("Totalconsumption by end-user.xlsx", 
+                               sheet="Total Consumption", skip=2)
+pop <- read.csv("colorado_census_data.csv")
+
+```
+
+# Population
+## Cleaning Data
+```{r}
+#convert date column to Date object
+year <- as.POSIXct(pop$date, format = "%d/%m/%y")
+pop$year <- format(year, format="%Y")
+pop$year <- as.numeric(pop$year)
+pop$rownum <- 1:nrow(pop)
+#change 2000~2068 as 1900~1968. Index number 1~69.
+pop$year <- ifelse(pop$rownum <= 69, pop$year - 100, pop$year)
+
+# convert year column to string in format dd/mm/yyyy
+pop$date <- as.Date(paste(sprintf("%02d", pop$year),"12", "01", sep = "-"))
+
+```
+
+## Visualize the data
+```{r}
+#plot with 10 years breaks
+ggplot(pop, aes(x=date, y=Population)) +
+  scale_x_date(date_breaks = "10 years", date_labels = "%Y") + 
+  geom_line() + 
+  geom_point(size=0.5)+
+  theme_classic() + geom_smooth()
+
+
+ggplot(pop, aes(x=date, y=Population))+
+  scale_x_date(date_labels = "%Y") +
+  geom_smooth() + 
+  geom_line()+
+  geom_point(size=0.1)+
+  theme_classic()+
+  xlab("Date")
+
+```
+
+## Splitting Traing and Test set
+```{r}
+# library(caret)
+set.seed(123)
+#pop <- na.omit(pop)
+
+trainIndex <- nrow(pop)*0.8
+trainData <- pop[1:98, ]
+testData <- pop[99:123, ]
+
+# Build linear regression model
+lm_model <- lm(Population ~ year, data = trainData)
+
+# Make predictions on validation set
+predictions <- predict(lm_model, newdata = testData)
+# Calculate the mean squared error
+testData$preds <- predictions
+mean((testData$Population - predictions)^2) #1.949077e+12
+
+```
+
+## Finding Best degree of polynomial regression 
+```{r}
+degree=5
+
+test_mses <- training_mses <- c()
+for (i in 1:degree) {   
+  poly_model = lm(Population ~ poly(year,i), data=trainData)
+  y_hat_training = predict(poly_model)
+  training_mses[i] <- mean((trainData$Population - y_hat_training)^2)
+
+  y_hat_test <- predict(poly_model, newdata = testData)
+  test_mses[i] <- mean((testData$Population - y_hat_test)^2)
+  
+  mses <- data.frame(degree = 1:i, training_error = training_mses, test_error = test_mses)
+}
+
+# Plot the errors
+ggplot(mses, aes(x = degree)) +
+  geom_line(aes(y = training_error), color = "blue", size = 1) +
+  geom_line(aes(y = test_error), color = "red", size = 1) +
+  labs(x = "Polynomial degree", y = "MSE") +
+  scale_x_continuous(breaks = 1:degree) +
+  theme_bw()
+
+# Find the degree with the lowest test error
+best_degree <- which.min(test_mses)
+
+# Print the best degree and its corresponding test error
+cat("Best degree:", best_degree, "\n")  
+#Best degree: 2
+cat("Test error:", test_mses[best_degree], "\n") 
+#Test error: 26318466441
+
+```
+
+## Anlalyze Final Model(1900~2022)
+```{r}
+#fit best model
+best_model = lm(Population ~ poly(year,2, raw=T), data=pop)
+summary(best_model)
+
+ggplot(pop, aes(x=year, y = Population)) + 
+          geom_point() +
+          stat_smooth(method='lm', formula = y ~ poly(x,2), size = 1) + 
+          xlab('Year') +
+          ylab('Population of Colorado')
+          
+```
+
+```{r}
+# Pick important column & Combine past and future datasets
+future_years <- data.frame(year=c(2023:2040))
+future_predictions <- predict(best_model, newdata = future_years)
+newData <- cbind(year=future_years, Population=future_predictions)
+
+pop <- pop[ ,c("year","Population")]
+pred_pop <- rbind(pop, newData)
+
+# Plot data
+ggplot(head(pred_pop, 123), aes(x = year, y = Population)) +
+  stat_smooth(method='lm', formula = y ~ poly(x,6), size = 1) + 
+  geom_line(color = "black") +
+  geom_line(data = tail(pred_pop, 19), size = 1, color = 'red') +
+  ylab("Population") + labs(title = 'Prediction of Population from 2023 to 2040', x = "Year")
+
+```
+
+# Total Energy Consumption
+
+## Data Cleaning
+
+```{r}
+# get only colorado 
+tot_con_end_user <- tot_con_end_user %>% 
+  filter(State=="CO") %>%
+  pivot_longer(cols = as.character(c(1960:2020)),
+               names_to = "year",
+               values_to = "total_energy_consumption")
+tot_con_end_user$year <- as.numeric(tot_con_end_user$year)
+
+```
+
+## Trend Plot (1960~2020)
+
+```{r}
+ggplot(tot_con_end_user, aes(year, total_energy_consumption)) +
+  geom_point() +
+  geom_smooth() + labs(title = 'Total Energy Consumption over time in Colorado', y= "Billion Btu") 
+```
+
+#### Seen above is the current total energy consumption and the trend it follows in the state of Colorado.
+
+## Prediction
+
+```{r}
+# split into training and test set
+set.seed(123)
+trainIndex <- round(nrow(tot_con_end_user)*0.8)
+trainData <- tot_con_end_user[1:trainIndex, ]
+testData <- tot_con_end_user[(1+trainIndex):nrow(tot_con_end_user), ]
+```
+
+## Finding Best degree of polynomial regression
+
+```{r}
+degree=10
+
+# Run loop to get best polynomial model
+test_mses <- training_mses <- c()
+for (i in 1:degree) {   
+  poly_model = lm(total_energy_consumption ~ poly(year,i), data=trainData)
+  y_hat_training = predict(poly_model)
+  training_mses[i] <- mean((trainData$total_energy_consumption - y_hat_training)^2)
+
+  y_hat_test <- predict(poly_model, newdata = testData)
+  test_mses[i] <- mean((testData$total_energy_consumption - y_hat_test)^2)
+  
+  mses <- data.frame(degree = 1:i, training_error = training_mses, test_error = test_mses)
+}
+
+# Plot the errors
+ggplot(mses, aes(x = degree)) +
+  geom_line(aes(y = training_error), color = "blue", size = 1) +
+  geom_line(aes(y = test_error), color = "red", size = 1) +
+  labs(x = "Polynomial degree", y = "MSE") +
+  scale_x_continuous(breaks = 1:degree) +
+  theme_bw()
+
+# Find the degree with the lowest test error
+best_degree <- which.min(test_mses)
+
+# Print the best degree and its corresponding test error
+cat("Best degree:", best_degree, "\n")  
+#Best degree: 6
+cat("Test error:", test_mses[best_degree], "\n") 
+#Test error: 3533105058
+
+```
+
+#### We fit a polynomial curve to figure out which degree polynomial model is best to predict the future electricity consumption in Colorado.
+
+## Analyze Final Model(1900~2022)
+
+```{r}
+#fit best model
+best_model <- lm(total_energy_consumption ~ poly(year,6, raw=T), data = tot_con_end_user)
+summary(best_model)
+
+p <- ggplot(tot_con_end_user, aes(x=year, y = total_energy_consumption)) + 
+          geom_line() +
+          stat_smooth(method='lm', formula = y ~ poly(x,6), size = 1) + 
+          xlab('Year') +
+          ylab('CO of Colorado') + labs(title = 'Total Energy Consumption over time in Colorado in billion Btu')
+p
+```
+
+#### The best model was a polynomial model with degree 6 and it was fit on the training set.
+
+## Predicting future years(2021\~ 2040)
+```{r}
+# Create data from future years
+future_years <- data.frame(year=c(2021:2040))
+future_predictions <- predict(best_model, newdata = future_years)
+newData <- cbind(year=future_years, total_energy_consumption=future_predictions)
+
+# Pick important column & Combine past and future datasets
+tot_con_end_user <- tot_con_end_user[ ,c("year","total_energy_consumption")]
+pred_totalcounsmption <- rbind(tot_con_end_user, newData)
+
+# Plot data
+ggplot(head(pred_totalcounsmption, 61), aes(x = year, y = total_energy_consumption)) +
+  stat_smooth(method='lm', formula = y ~ poly(x,6), size = 1) + 
+  geom_line(color = "black") +
+  geom_line(data = tail(pred_totalcounsmption, 22), size = 1, color = 'red') +
+  ylab("Solar Energy Consumption in Colorado") + labs(title = 'Total Energy Consumption over time in Colorado in billion Btu')
+```
+
+#### The final model was used to predict the consumption for the next 20 years.
+
+# Total Solar Energy Generation Model & Prediction
+
+## Data Cleaning
+
+```{r}
+# filter for solar fueltypedescription
+solar_fueldesc <- grep("solar", unique(generation$fuelTypeDescription), value=TRUE)
+subset_solar <- generation %>% 
+  filter(sectorDescription=="All Sectors") %>% filter(fuelTypeDescription=="estimated small scale solar photovoltaic" |                                                                        fuelTypeDescription=="solar" | fuelTypeDescription=="solar photovoltaic" |
+                                                                           fuelTypeDescription=="estimated total solar" | fuelTypeDescription=="estimated total solar photovoltaic") 
+
+# Pick important columns
+subset_solar <- subset_solar[, -c(2:6,8:15)]
+
+# Pick data that is only solarphotovoltaic
+solar_desc <- grep("solar", unique(generation$fuelTypeDescription), value=TRUE)
+generation_solar <- generation %>% filter(sectorDescription=="All Sectors") %>% filter(fuelTypeDescription=="estimated small scale solar photovoltaic" |                fuelTypeDescription=="solar" | fuelTypeDescription=="solar photovoltaic" |                                                                      fuelTypeDescription=="estimated total solar" | fuelTypeDescription=="estimated total solar photovoltaic")
+ 
+```
+
+```{r}
+# decided to use solar photovoltaic fuelTypeDescription
+generation_solar <- generation_solar %>%
+  dplyr::select(period, fuelTypeDescription, generation, `generation.units`) %>%
+  filter(fuelTypeDescription=="solar photovoltaic")
+
+#Convert generation unit from 1000 mwh to btu. 1 MWh = 3,412,141.63 BTU
+generation_solar$generation_mwh <- (generation_solar$generation)*1000 # convert in to unit 1mwh
+generation_solar$generation_btu <- (generation_solar$generation_mwh)* (3412141.63) #btu 
+
+# Convert column to datetime format
+generation_solar$period <- as.Date(paste0(generation_solar$period, "-01"))
+
+generation_solar <- arrange(generation_solar, period)
+
+#remove 0s
+generation_solar <- tail(generation_solar, 163)
+
+# group by year and calculate mean for each year
+generation_solar_yearly_avg <- generation_solar %>%
+  group_by(year = lubridate::year(period)) %>%
+  summarize(generation_btu_avg = mean(generation_btu))
+
+
+```
+
+## Trend Plot
+
+```{r}
+# make a graph
+ggplot(generation_solar_yearly_avg, aes(year, generation_btu_avg)) +
+  geom_point() +
+  geom_smooth() + labs(title = 'Total Solar Energy Generation over time in Colorado',y= "Btu")
+```
+
+#### Current solar generation of electricity can be seen in the graph above as well as the trend it's following.
+
+```{r}
+# split into training and test set
+set.seed(123)
+trainIndex <- round(nrow(generation_solar_yearly_avg)*0.8)
+trainData <- generation_solar_yearly_avg[1:trainIndex, ]
+testData <- generation_solar_yearly_avg[(1+trainIndex):nrow(generation_solar_yearly_avg), ]
+```
+
+## Finding Best degree of polynomial regression
+
+```{r}
+degree=10
+
+# Run loop to get best polynomial model
+test_mses <- training_mses <- c()
+for (i in 1:degree) {   
+  poly_model = lm(generation_btu_avg ~ poly(year,i), data=trainData)
+  y_hat_training = predict(poly_model)
+  training_mses[i] <- mean((trainData$generation_btu_avg - y_hat_training)^2)
+
+  y_hat_test <- predict(poly_model, newdata = testData)
+  test_mses[i] <- mean((testData$generation_btu_avg - y_hat_test)^2)
+  
+  mses <- data.frame(degree = 1:i, training_error = training_mses, test_error = test_mses)
+}
+
+# Plot the errors
+ggplot(mses, aes(x = degree)) +
+  geom_line(aes(y = training_error), color = "blue", size = 1) +
+  geom_line(aes(y = test_error), color = "red", size = 1) +
+  labs(x = "Polynomial degree", y = "MSE") +
+  scale_x_continuous(breaks = 1:degree) +
+  theme_bw()
+
+# Find the degree with the lowest test error
+best_degree <- which.min(test_mses)
+
+# Print the best degree and its corresponding test error
+cat("Best degree:", best_degree, "\n")  
+#Best degree: 2
+cat("Test error:", test_mses[best_degree], "\n") 
+#Test error: 3317365765520133455872
+
+```
+
+#### We created a MSE/Polynomial Degree curve to figure out what the best degree polynomial will be to predict future electricity generation.
+
+## Analyze Final Model(1900\~2022)
+
+```{r}
+#fit best model
+best_model <- lm(generation_btu_avg ~ poly(as.numeric(year),2, raw=T), data=generation_solar_yearly_avg)
+summary(best_model)
+
+# Plot best model
+ggplot(generation_solar_yearly_avg, aes(x=year, y = generation_btu_avg)) + 
+          geom_line() +
+          stat_smooth(method='lm', formula = y ~ poly(x,2), size = 1) +
+          labs(x='Year', y="Btu", title='Solar Energy Generation of Colorado')
+
+```
+
+#### The best model was chosen to be of degree 2, and it was fit to the entire dataset to get a robust model.
+
+## Predicting future years(2022 \~ 2040)
+
+```{r}
+# Create dataset for future years
+future_years <- data.frame(year = c(2022:2040))
+future_predictions <- predict(best_model, newdata = future_years)  
+newData <- cbind(year=future_years, generation_btu_avg=future_predictions)
+
+
+generation_solar_yearly_avg <- generation_solar_yearly_avg[ ,c("year","generation_btu_avg")]
+
+# Combine past and present data
+PredictedSolarGeneration <- rbind(generation_solar_yearly_avg, newData)
+
+# Plot past and future data with best model
+ggplot(head(PredictedSolarGeneration, 61), aes(x = year, y = generation_btu_avg)) +
+  stat_smooth(method='lm', formula = y ~ poly(x,6), size = 1) + 
+  geom_line(color = "black") +
+  geom_line(data = tail(PredictedSolarGeneration, 22), size = 1, color = 'red') +
+  labs(y = "Solar Energy(Btu)", title = "Avg. Solar Energy Generation and Prediction")
+```
+
+#### The created model and then used model to predict the electricity generation until 2040.
+
+# Calculating Number of Solar Panels
+
+```{r}
+#Predicted total energy consumption in 2040 in btu
+predicted_total_consumption_2040 <- 1494279 * 1000000000 
+
+#Predicted daily energy consumption in 2040 in btu 
+predicted_daily_electricity_consumption_2040 <- predicted_total_consumption_2040/365 
+
+# How many solar panels are needed to so that 2% of the daily energy consumed comes from solar sources in the year 2040 ?
+
+n <- predicted_daily_electricity_consumption_2040 * 0.02
+d <-  682428 # Daily energy generated by 1 solar panel in btu
+
+print(paste("No. of solar panels needed so that 2% of the daily energy consumed comes from solar sources in the year 2040:", as.integer(n/d)))
+
+# How many solar panels are needed to so that 5% of the daily energy consumed comes from solar sources in the year 2040 ?
+n <- predicted_daily_electricity_consumption_2040 * 0.05
+d <-  682428 # Daily energy generated by 1 solar panel in btu
+
+print(paste("No. of solar panels needed so that 5% of the daily energy consumed comes from solar sources in the year 2040:", as.integer(n/d)))
+
+# How many solar panels are needed to so that 10% of the daily energy consumed comes from solar sources in the year 2040 ?
+n <- predicted_daily_electricity_consumption_2040 * 0.1
+d <-  682428 # Daily energy generated by 1 solar panel in btu
+
+print(paste("No. of solar panels needed so that 10% of the daily energy consumed comes from solar sources in the year 2040:", as.integer(n/d)))
+
+```
+
+# Generation from Solar Resource
+
+```{r}
+
+# Calculate electrical energy generation from a given solar panel with a known solar irradiance Wh/m2/day
+solResource_to_elec <- solResource %>%
+mutate(across(c(2:ncol(solResource)), ~ . * 0.2 * 1 *365))
+
+# Convert all columns to generated electrical energy
+# Electrical energy (in watt-hours) yearly = Solar irradiance (in Wh/m2/day) x Panel efficiency (as a decimal) x Panel area (in square meters) x 365 days
+
+# sum up all energy of column "yearly"
+AnnualSolarResource_inColorado<-sum(solResource_to_elec$Annual)
+
+#convert into btu. 1 Wh = 3.412 BTU.
+AnnualSolarResource_inColorado<-AnnualSolarResource_inColorado*3.412
+
+# 4148584948
+# colorado total area = 104185 mi2 or 269837900000 m2
+# 4148584948 btu / 2911 m2 = x / 269837900000 m2
+# total btu that can be produced if all of Colorado was covered in solar panels
+# is 384557054643900032
+```
+
+#### Solar Energy generated from total solar resource in Colorado lands 930737874670080 Btu.
+
+#### Predicted amount of solar energy generation in 2040 is 3045704453701 Btu.
+
+#### Solar Energy generated from natural solar resources in Colorado shows the potential maximum solar energy that can be generated with the high efficiency of solar panels. This is to show the room for improving the amount of solar energy.
