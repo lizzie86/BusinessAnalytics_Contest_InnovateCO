@@ -1,4 +1,5 @@
-# RenewableEnergy_InnovateCO
+# BusinessAnalytics_Contest_InnovateCO
+
 This was the project that I teamed up with two other people for the Business Analytics Challenge called InnovateCO held by Colorado BIC. 
 We were chosen as finalists, participated in the final pitch, and had the honor of second place in the contest. 
 
